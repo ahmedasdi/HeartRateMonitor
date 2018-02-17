@@ -1,0 +1,77 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <p32xxxx.h>
+#include <plib.h>
+#define CCLK (80000000L)            //system clock
+#define POT 2              //defines the input channel assigned to the potentiometer.
+                            //The potentionmeter is connected to AN2.
+
+#if defined (__32MX340F512H__) //for this device, other devices this needs to be changed 
+#pragma config FPLLMUL = MUL_20, FPLLIDIV = DIV_2, FPLLODIV = DIV_1, FWDTEN = OFF
+#pragma config POSCMOD = HS, FNOSC = PRIPLL, FPBDIV = DIV_1
+#endif
+
+#define	PeripheralClock()		(CCLK/(1 << OSCCONbits.PBDIV)) //peripheral clock is system clock/FPBDIV. 
+//division can only be one bit (0 or 1) so shift 1 or 2
+
+#if defined (__32MX340F512H__)
+#define UART_MODULE_ID UART1 //uC32 USB is connected to UART1 
+#endif
+
+void initADC(int amask) {       //amask is a mask that helps us define which inputs 
+                                //should be treated as analog and which ones as digital 
+    AD1PCFG = amask;            //select the analog input pins
+    AD1CON1 = 0x00E0;           //auto convert after the end of sampling
+    AD1CSSL = 0;                //no scanning required
+    AD1CON2 = 0;                //use MUXA, AVss/AVdd used as Vref+/-
+    AD1CON3 = 0x1F3F;           //max sample time = 31TAD
+    AD1CON1SET = 0x8000;        //turn on the ADC
+}                               //initADC
+
+int readADC(int ch){
+    AD1CHSbits.CH0SA = ch;      //select the analog input channel
+    AD1CON1bits.SAMP = 1;       //start sampling
+    while(!AD1CON1bits.DONE);   // wait to complete conversion
+    return ADC1BUF0;            //read the conversion result
+}                               //read ADC
+       
+
+void sendUART(double a){    //Sends the converted digital signal to the UART
+    while(U1STAbits.UTXBF); //While bits are being transmitted to the UART
+    U1TXREG = a;        //Initializing the start bit for the UART transmission
+}
+int main(void)
+{
+    TRISE = 0x00;//configure all pins as output
+    LATE = 0x00;//set all pins as off 
+
+    //ADC
+  SYSTEMConfigPerformance(CCLK);          //Optimize system frequency at 8 MHz
+    mJTAGPortEnable(DEBUG_JTAGPORT_OFF);    //for Mikro E board only
+    mOSCSetPBDIV(OSC_PB_DIV_2);             //Peripheral bus frequency is now 40000000 Hz
+    
+    //UART configurations 
+    
+    UARTConfigure(UART_MODULE_ID, UART_ENABLE_PINS_TX_RX_ONLY);//For UART, enable the transmit and receive
+    
+    UARTSetFifoMode(UART_MODULE_ID, UART_INTERRUPT_ON_TX_NOT_FULL | UART_INTERRUPT_ON_RX_NOT_EMPTY);//For UART, configure interrupts to occur
+    
+    UARTSetLineControl(UART_MODULE_ID, UART_DATA_SIZE_8_BITS | UART_PARITY_NONE | UART_STOP_BITS_1); //For UART, the size of data is 8 bits with 1 stop bit and no parity bit
+    
+    UARTSetDataRate(UART_MODULE_ID, PeripheralClock(), 9600);//For UART1, the BAUD rate is 9600 bits per second 
+    
+    UARTEnable(UART_MODULE_ID, UART_ENABLE_FLAGS(UART_PERIPHERAL | UART_RX | UART_TX));//For UART1, enable the flag mode 
+
+    int a;
+    
+    T3CON=0x8070;   
+    PR3=0xFFFF;
+    initADC(0xFFFB);
+    //initU1();
+    while(1){
+        a=readADC(POT);
+        
+        a=a>>2;         //Shifts the digital signal 2 bits to the right due to the difference in sampling bits 
+        //between the ADC and the UART, needed before sending signal to UART
+        LATE=a;
+        sendUART(a);
